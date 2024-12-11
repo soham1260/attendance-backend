@@ -250,12 +250,10 @@ app.get('/getAttendanceReport/:subject', async (req, res) => {
       return res.status(404).json({ error: 'No attendance records found for this subject' });
     }
 
-    // Extract all unique student IDs
-    const allStudents = Array.from(
-      new Set(attendanceRecords.flatMap((record) => record.presentStudents))
-    ).sort(); // Sorted list of all student IDs
+    // Extract the students array from the subject
+    const allStudents = subject.students.sort(); // All enrolled students from the Subject
 
-    // Extract all unique dates
+    // Extract all unique dates from attendance records
     const allDates = attendanceRecords
       .map((record) => record.date.toISOString().split('T')[0])
       .sort();
@@ -309,6 +307,76 @@ app.get('/getAttendanceReport/:subject', async (req, res) => {
     });
   } catch (error) {
     console.error('Error generating attendance report:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+
+app.post('/markAttendance', async (req, res) => {
+  const { subject, enroll_no } = req.body;
+
+  try {
+    // Fetch the subject document
+    const subjectDoc = await Subject.findOne({ name: subject });
+
+    if (!subjectDoc) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Extract the students array from the subject
+    const enrolledStudents = subjectDoc.students;
+
+    // Convert numeric enroll_no to student IDs
+    const mappedStudents = enroll_no
+      .map((num) => `BT21CSE${String(num).padStart(3, '0')}`) // Format numbers as BT21CSEXXX
+      .filter((studentId) => enrolledStudents.includes(studentId)); // Filter valid students
+
+    // If no valid students, return an error
+    if (mappedStudents.length === 0) {
+      return res.status(400).json({ error: 'No valid enroll numbers provided' });
+    }
+
+    // Get today's date (without time)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Check if an attendance record already exists for this subjectId and date
+    const existingRecord = await AttendanceRecord.findOne({
+      subjectId: subjectDoc._id,
+      date: today,
+    });
+
+    if (existingRecord) {
+      // Update the existing attendance record
+      existingRecord.presentStudents = mappedStudents;
+      await existingRecord.save();
+
+      return res.status(200).json({
+        message: 'Attendance updated successfully',
+        record: existingRecord,
+      });
+    } else {
+      // Create a new attendance record
+      const newAttendanceRecord = new AttendanceRecord({
+        subjectId: subjectDoc._id,
+        date: today,
+        presentStudents: mappedStudents,
+      });
+
+      // Save the new attendance record
+      await newAttendanceRecord.save();
+
+      // Update the attendanceRecords array in the subject
+      subjectDoc.attendanceRecords.push(newAttendanceRecord._id);
+      await subjectDoc.save();
+
+      return res.status(200).json({
+        message: 'Attendance marked successfully',
+        record: newAttendanceRecord,
+      });
+    }
+  } catch (error) {
+    console.error('Error marking attendance:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
