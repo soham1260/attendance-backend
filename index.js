@@ -10,6 +10,7 @@ app.use(express.json());
 const xlsx = require('xlsx');
 const fs = require('fs');
 const path = require('path');
+const bcrypt = require('bcryptjs');
 
 const JWT_SECRET = process.env.JWT;
 
@@ -94,9 +95,41 @@ const attendanceRecordSchema = new mongoose.Schema({
   
 const AttendanceRecord = mongoose.model('AttendanceRecord', attendanceRecordSchema);
 
+const studentSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true,
+  },
+  rollNo: {
+    type: String,
+    required: true,
+    unique: true,
+  },
+  department: {
+    type: String,
+    required: true,
+  },
+  year: {
+    type: Number,
+    required: true,
+  },
+  password: {
+    type: String,
+    required: true,
+  },
+  courses: [
+    {
+      type: String,
+      required: true,
+    },
+  ],
+});
+
+const Student = mongoose.model('Student', studentSchema);
+
 const authenticateToken = (req, res, next) => {
   let token = req.header('token');
-  console.log(token);
+  //console.log(token);
   
   if (!token) {
     return res.status(401).json({ message: 'Authorization token required' });
@@ -104,7 +137,7 @@ const authenticateToken = (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.teacherId = decoded.id;
+    req.ID = decoded.id;
     next();
   } catch (err) {
     console.error(err);
@@ -156,7 +189,7 @@ app.post('/login', async (req, res) => {
     }
 
     // Generate JWT
-    const token = jwt.sign({ id: teacher._id }, JWT_SECRET,);
+    const token = jwt.sign({ id: teacher._id }, JWT_SECRET, { expiresIn: '1h' } );
     res.status(200).json({ token });
   } catch (err) {
     console.error(err);
@@ -164,9 +197,100 @@ app.post('/login', async (req, res) => {
   }
 });
 
+// Signup Route
+app.post('/signup', async (req, res) => {
+  const { name, email, department, phone, password } = req.body;
+
+  if (!name || !email || !department || !password) {
+    return res.status(400).json({ message: 'All required fields must be provided.' });
+  }
+
+  try {
+    // Check if the email already exists
+    const existingTeacher = await Teacher.findOne({ email });
+    if (existingTeacher) {
+      return res.status(400).json({ message: 'Email is already registered.' });
+    }
+
+    // Create a new teacher
+    const newTeacher = new Teacher({
+      name,
+      email,
+      department,
+      phone,
+      password,
+    });
+
+    await newTeacher.save();
+    res.status(201).json({ message: 'Signup successful! You can now login.' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'An error occurred while signing up.' });
+  }
+});
+
+// Student Login Route
+app.post('/student-login', async (req, res) => {
+  const { rollNo, password } = req.body;
+  console.log(`Login Attempt: RollNo: ${rollNo}`);
+
+  try {
+    // Check if the student exists
+    const student = await Student.findOne({ rollNo });
+    if (!student) {
+      return res.status(400).json({ message: 'Invalid roll number or password' });
+    }
+
+    if (student.password !== password) {
+      return res.status(400).json({ message: 'Invalid roll number or password' });
+    }
+
+    // Generate JWT
+    const token = jwt.sign({ id: student._id }, JWT_SECRET, { expiresIn: '1h' } );
+    res.status(200).json({ token, message: 'Login successful' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Student Signup Route
+app.post('/student-signup', async (req, res) => {
+  const { name, rollNo, department, year, password } = req.body;
+
+  if (!name || !rollNo || !department || !year || !password) {
+    return res.status(400).json({ message: 'All required fields must be provided.' });
+  }
+
+  try {
+    // Check if the roll number already exists
+    const existingStudent = await Student.findOne({ rollNo });
+    if (existingStudent) {
+      return res.status(400).json({ message: 'Roll number is already registered.' });
+    }
+
+    // Create a new student
+    const newStudent = new Student({
+      name,
+      rollNo,
+      department,
+      year,
+      password,
+      courses: [],
+    });
+
+    await newStudent.save();
+    res.status(201).json({ message: 'Signup successful! You can now login.' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'An error occurred while signing up.' });
+  }
+});
+
+
 app.get('/getNameAndSubjects', authenticateToken, async (req, res) => {
   try {
-    const teacherId = req.teacherId; // Extracted from token
+    const teacherId = req.ID; // Extracted from token
 
     // Fetch the subjects and populate the teacher's name
     const subjects = await Subject.find({ teacher: teacherId })
@@ -174,7 +298,9 @@ app.get('/getNameAndSubjects', authenticateToken, async (req, res) => {
       .select('name code teacher _id'); // Select fields to include in the result
 
     if (!subjects.length) {
-      return res.status(404).json({ message: 'No subjects found for this teacher' });
+      const teacher = await Teacher.findById(teacherId);
+
+      return res.status(404).json({ message: 'No subjects found for this teacher', teacher: teacher.name });
     }
 
     // Construct response
@@ -311,13 +437,13 @@ app.get('/getAttendanceReport/:subject', async (req, res) => {
   }
 });
 
-
 app.post('/markAttendance', async (req, res) => {
   const { subject, enroll_no } = req.body;
-
+  //console.log(subject + ' ' + enroll_no);
   try {
     // Fetch the subject document
     const subjectDoc = await Subject.findOne({ name: subject });
+    //console.log(subjectDoc);
 
     if (!subjectDoc) {
       return res.status(404).json({ error: 'Subject not found' });
@@ -327,8 +453,11 @@ app.post('/markAttendance', async (req, res) => {
     const enrolledStudents = subjectDoc.students;
 
     // Convert numeric enroll_no to student IDs
+    // const mappedStudents = enroll_no
+    //   .map((num) => `BT21CSE${String(num).padStart(3, '0')}`) // Format numbers as BT21CSEXXX
+    //   .filter((studentId) => enrolledStudents.includes(studentId)); // Filter valid students
+
     const mappedStudents = enroll_no
-      .map((num) => `BT21CSE${String(num).padStart(3, '0')}`) // Format numbers as BT21CSEXXX
       .filter((studentId) => enrolledStudents.includes(studentId)); // Filter valid students
 
     // If no valid students, return an error
@@ -347,9 +476,11 @@ app.post('/markAttendance', async (req, res) => {
     });
 
     if (existingRecord) {
-      // Update the existing attendance record
-      existingRecord.presentStudents = mappedStudents;
+      // Add new students to the presentStudents array (avoiding duplicates)
+      const uniqueStudents = [...new Set([...existingRecord.presentStudents, ...mappedStudents])];
+      existingRecord.presentStudents = uniqueStudents;
       await existingRecord.save();
+
 
       return res.status(200).json({
         message: 'Attendance updated successfully',
@@ -380,3 +511,231 @@ app.post('/markAttendance', async (req, res) => {
     res.status(500).json({ error: 'Internal server error' });
   }
 });
+
+// Route to register a new course for a teacher
+app.post('/registerCourse',authenticateToken,  async (req, res) => {
+  //const { name, code, teacherId, students } = req.body;
+  const { name, code, token } = req.body;
+
+  const teacherId = req.ID;
+
+  console.log(name + ' ' + code + ' ' + teacherId);
+  try {
+    // Check if the teacher exists
+    const teacher = await Teacher.findById(teacherId);
+    if (!teacher) {
+      return res.status(404).json({ message: 'Teacher not found' });
+    }
+
+    // Check if the course code is unique
+    const existingSubject = await Subject.findOne({ code });
+    if (existingSubject) {
+      return res.status(400).json({ message: 'Course code already exists' });
+    }
+
+    const teacherObjectId = new mongoose.Types.ObjectId(teacherId);
+
+    // Create a new subject
+    const newSubject = new Subject({
+      name,
+      code,
+      teacher: teacherObjectId,
+      students: [], // List of students
+      attendanceRecords: [], // Initialize with an empty array
+    });
+
+    // Save the subject to the database
+    const savedSubject = await newSubject.save();
+
+    res.status(201).json({ message: 'Course registered successfully', subject: savedSubject });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// Route to fetch student profile and courses
+app.get('/student/profile', authenticateToken, async (req, res) => {
+  try {
+    const studentId = req.ID; // Assuming the JWT middleware attaches the user ID to req.user
+
+    // Fetch student details
+    const student = await Student.findById(studentId).select('-password'); // Exclude password field
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    // Fetch courses the student is enrolled in
+    const courses = await Subject.find({ code: { $in: student.courses } }).populate('teacher', 'name');
+
+    res.status(200).json({ student, courses });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'An error occurred while fetching the profile and courses.' });
+  }
+});
+
+app.get('/getCourses', async (req, res) => {
+  try {
+    const courses = await Subject.find().populate('teacher', 'name'); // Get all courses and populate teacher name
+    res.json({ courses });
+  } catch (err) {
+    console.error('Error fetching courses:', err);
+    res.status(500).json({ message: 'An error occurred while fetching courses.' });
+  }
+});
+
+app.post('/registerStudent', authenticateToken, async (req, res) => {
+  const { courseCode} = req.body;
+  const studentId = req.ID;
+  if (!courseCode || !studentId) {
+    return res.status(400).json({ message: 'Course code and StudentId are required.' });
+  }
+
+  try {
+    // Find the course
+    const course = await Subject.findById(courseCode);
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found.' });
+    }
+
+    // Check if student is already enrolled in the course
+    const student = await Student.findById(studentId);
+    if (course.students.includes(student.rollNo)) {
+      return res.status(400).json({ message: 'Student is already enrolled in this course.' });
+    }
+
+    // Add student to the course
+    course.students.push(student.rollNo);
+    await course.save();
+
+    student.courses.push(course.code);
+    await student.save();
+
+    // Optionally, you can also update the student's record (if you have a student model)
+    // await Student.findByIdAndUpdate(studentId, { $push: { courses: courseId } });
+
+    res.json({ message: 'Student registered successfully for the course.', course });
+  } catch (err) {
+    console.error('Error registering student:', err);
+    res.status(500).json({ message: 'An error occurred while registering the student.' });
+  }
+});
+
+app.post('/getEnrolledStudents', async (req, res) => {
+  const { subject } = req.body;
+  //console.log(subject)
+  try {
+    const subjectDoc = await Subject.findOne({ code: subject }).populate('students', 'name id');
+    if (!subjectDoc) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+    //console.log(subjectDoc);
+    const students = await Student.find(
+      { rollNo: { $in: subjectDoc.students } }, // Match roll numbers from the subject document
+      { name: 1, rollNo: 1} // Only select name and rollNo fields
+    );
+    
+    if (students.length === 0) {
+      return res.status(404).json({ error: 'No students found for this subject' });
+    }
+
+    res.status(200).json({ students });
+  } catch (error) {
+    console.error('Error fetching enrolled students:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/attendance/dates', async (req, res) => {
+  const { course } = req.body;
+  //console.log(course);
+
+  try {
+    const subjectDoc = await Subject.findOne({ code: course }).populate('attendanceRecords');
+    if (!subjectDoc) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Extract and format attendance record dates
+    const dates = subjectDoc.attendanceRecords.map(record => 
+      //record.date.toISOString().split('T')[0] // Format: YYYY-MM-DD
+      record.date.toDateString()
+    );
+
+    res.status(200).json({ dates: [...new Set(dates)] }); // Return unique dates
+  } catch (error) {
+    console.error('Error fetching attendance dates:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/attendance', async (req, res) => {
+  const { course, date } = req.body;
+
+  try {
+    const subjectDoc = await Subject.findOne({ code: course }).populate('attendanceRecords');
+    if (!subjectDoc) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Find the attendance record for the given date
+    const record = subjectDoc.attendanceRecords.find(
+      record => record.date.toDateString() === date
+    );
+    // const record = subjectDoc.attendanceRecords.find(
+    //   record => record.date.toISOString().split('T')[0] === date
+    // );
+
+    if (!record) {
+      return res.status(404).json({ error: 'No attendance record found for the selected date' });
+    }
+
+    // Populate students and determine attendance status
+    const students = await Student.find({ rollNo: { $in: subjectDoc.students } });
+    const attendance = students.map(student => ({
+      rollNo: student.rollNo,
+      name: student.name,
+      present: record.presentStudents.includes(student.rollNo),
+    }));
+
+    res.status(200).json({ students: attendance });
+  } catch (error) {
+    console.error('Error fetching attendance:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/attendance/update', async (req, res) => {
+  const { course, date, students } = req.body;
+
+  try {
+    const subjectDoc = await Subject.findOne({ code: course }).populate('attendanceRecords');
+    if (!subjectDoc) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    // Find the attendance record for the given date
+    const record = subjectDoc.attendanceRecords.find(
+      record => record.date.toDateString() === date
+    );
+    // const record = subjectDoc.attendanceRecords.find(
+    //   record => record.date.toISOString().split('T')[0] === date
+    // );
+
+    if (!record) {
+      return res.status(404).json({ error: 'No attendance record found for the selected date' });
+    }
+
+    // Update the attendance record with the new student list
+    record.presentStudents = students.filter(student => student.present).map(student => student.rollNo);
+    await record.save();
+
+    res.status(200).json({ message: 'Attendance updated successfully', record });
+  } catch (error) {
+    console.error('Error updating attendance:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
