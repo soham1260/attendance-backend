@@ -739,3 +739,55 @@ app.post('/attendance/update', async (req, res) => {
   }
 });
 
+app.get('/attendanceExistCheck', async (req, res) => {
+  const { subjectCode, date } = req.query;
+
+  try {
+    const subjectDoc = await Subject.findOne({ code: subjectCode })
+
+    // const attendance = await AttendanceRecord.find({
+    //   subjectId: subjectDoc._id
+    // });
+
+    // const record = attendance.find(
+    //   record => record.date.toDateString() === date
+    // );
+
+    const record = await AttendanceRecord.findOne({
+      subjectId: subjectDoc._id,
+      date: {
+        $gte: new Date(date).setHours(0, 0, 0, 0), // Start of the day
+        $lt: new Date(date).setHours(23, 59, 59, 999) // End of the day
+      }
+    });
+
+    //console.log(record);
+
+    if (record) {
+      res.json({ exists: true });
+    } else {
+      res.json({ exists: false });
+    }
+  } catch (err) {
+    console.error('Error checking attendance:', err);
+    res.status(500).json({ message: 'An error occurred while checking attendance.' });
+  }
+});
+
+app.post('/attendance/delete', async (req, res) => {
+  const { course, date } = req.body;
+  try {
+    const subjectDoc = await Subject.findOne({ code: course });
+    await AttendanceRecord.deleteOne({ 
+      subjectId: subjectDoc._id, 
+      date: {
+        $gte: new Date(date).setHours(0, 0, 0, 0), // Start of the day
+        $lt: new Date(date).setHours(23, 59, 59, 999) // End of the day
+      }
+    });
+    res.json({ message: 'Attendance record deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to delete attendance record' });
+  }
+});
+
